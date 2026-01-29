@@ -13,7 +13,27 @@ Raphael will bring the project to production and push to GitHub. Follow these st
 
 ## Your steps (you do this)
 
-### 1. Create the GitHub repo
+### Push checklist (do this first)
+
+1. **Create the repo on GitHub** (if you haven’t):
+   - Open **https://github.com/new** (logged in as **btbroker**).
+   - **Repository name:** `MonetaDEX-Swap` (exact spelling).
+   - **Private** or **Public** — your choice.
+   - **Do not** check “Add a README”, “Add .gitignore”, or “Choose a license”.
+   - Click **Create repository**.
+
+2. **Push from your Mac** (in Terminal):
+   ```bash
+   cd /Users/bernardoteixeira/MonetaDEX-Swap
+   git push -u origin main
+   ```
+   - If it asks for login, use your **btbroker** GitHub account (or a Personal Access Token if you use 2FA: GitHub → Settings → Developer settings → Personal access tokens → generate token with `repo` scope, use it as the password).
+
+3. **Confirm:** Open **https://github.com/btbroker/MonetaDEX-Swap** in your browser — you should see the project files.
+
+---
+
+### 1. Create the GitHub repo (if not done above)
 
 1. Go to **https://github.com/new** (logged in as **btbroker**).
 2. **Repository name:** `MonetaDEX-Swap` (exact name — repo URL will be https://github.com/btbroker/MonetaDEX-Swap).
