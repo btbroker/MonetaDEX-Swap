@@ -1,0 +1,44 @@
+{
+  "name": "@fortuna/swaps-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "clean": "rm -rf .next dist"
+  },
+  "dependencies": {
+    "next": "^14.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@sentry/nextjs": "^7.91.0",
+    "@tanstack/react-query": "^5.17.0",
+    "wagmi": "^2.5.0",
+    "viem": "^2.7.0",
+    "@fortuna/shared": "workspace:*",
+    "@fortuna/config": "workspace:*"
+  },
+  "devDependencies": {
+    "@fortuna/shared": "workspace:*",
+    "@fortuna/config": "workspace:*",
+    "@playwright/test": "^1.41.0",
+    "@types/node": "^20.11.5",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "autoprefixer": "^10.4.17",
+    "eslint": "^8.56.0",
+    "eslint-config-next": "^14.1.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "jsdom": "^23.0.1",
+    "postcss": "^8.4.33",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}

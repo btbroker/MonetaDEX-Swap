@@ -1,0 +1,30 @@
+# Code owners for MonetaDEX
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global owners
+* @fortuna-tech-labs/engineering
+
+# Core services
+/services/swaps-api/ @fortuna-tech-labs/backend
+/apps/swaps-web/ @fortuna-tech-labs/frontend
+
+# Shared packages
+/packages/shared/ @fortuna-tech-labs/engineering
+/packages/config/ @fortuna-tech-labs/engineering
+/packages/compliance/ @fortuna-tech-labs/backend
+
+# Infrastructure
+/infra/ @fortuna-tech-labs/devops
+
+# Documentation
+/docs/ @fortuna-tech-labs/engineering
+*.md @fortuna-tech-labs/engineering
+
+# CI/CD
+/.github/ @fortuna-tech-labs/devops
+
+# Configuration files
+/package.json @fortuna-tech-labs/engineering
+/pnpm-workspace.yaml @fortuna-tech-labs/engineering
+/turbo.json @fortuna-tech-labs/engineering
+/tsconfig.json @fortuna-tech-labs/engineering
