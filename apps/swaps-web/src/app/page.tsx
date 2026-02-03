@@ -7,7 +7,7 @@ import { TokenSelector } from "../components/token-selector";
 import { AmountInput } from "../components/amount-input";
 import { Settings } from "../components/settings";
 import { RouteCard } from "../components/route-card";
-import { ConnectWallet } from "../components/connect-wallet";
+import { ConnectWallet, useOpenWalletDropdown } from "../components/connect-wallet";
 import { TxStatus } from "../components/tx-status";
 import { useQuote } from "../hooks/use-quote";
 import { getSettings, type UserSettings } from "../lib/storage";
@@ -16,6 +16,7 @@ import { apiClient, ApiError } from "../lib/api-client";
 export default function Home() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
+  const openWalletDropdown = useOpenWalletDropdown();
   const { switchChain } = useSwitchChain();
   const { sendTransaction, data: txHash, isPending: isTxPending } = useSendTransaction();
   const { isLoading: isTxConfirming } = useWaitForTransactionReceipt({
@@ -277,10 +278,10 @@ export default function Home() {
             {/* Execute Button */}
             <button
               type="button"
-              onClick={handleExecute}
-              disabled={!canExecute || isTxPending || isTxConfirming}
+              onClick={!isConnected ? openWalletDropdown : handleExecute}
+              disabled={isConnected && (!canExecute || isTxPending || isTxConfirming)}
               className={`swap-button ${
-                canExecute && !isTxPending && !isTxConfirming
+                !isConnected || (canExecute && !isTxPending && !isTxConfirming)
                   ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700"
                   : "bg-gray-200 text-gray-400 cursor-not-allowed"
               }`}
@@ -291,7 +292,7 @@ export default function Home() {
                   Processing...
                 </span>
               ) : !isConnected ? (
-                "Connect Wallet to Swap"
+                "Connect Wallet"
               ) : !canExecute ? (
                 selectedRoute ? "Select a route above" : "Enter amount to get quotes"
               ) : (

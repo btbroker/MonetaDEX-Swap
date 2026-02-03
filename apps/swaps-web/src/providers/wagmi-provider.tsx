@@ -21,18 +21,19 @@ const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
 
 const config = createConfig({
   chains: [
-    mainnet, 
-    optimism, 
-    bsc, 
-    polygon, 
-    base, 
-    arbitrum, 
-    avalanche, 
-    scroll, 
-    mantle, 
-    blast, 
-    mode
+    mainnet,
+    optimism,
+    bsc,
+    polygon,
+    base,
+    arbitrum,
+    avalanche,
+    scroll,
+    mantle,
+    blast,
+    mode,
   ],
+  multiInjectedProviderDiscovery: true,
   connectors: [
     injected({ shimDisconnect: true }),
     ...(projectId

@@ -1,11 +1,5 @@
-import { config as loadEnv } from "dotenv";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import "./load-env.js";
 import { randomUUID } from "crypto";
-
-// Load .env from package root so keys are found whether run from repo root or services/swaps-api
-const __dirname = dirname(fileURLToPath(import.meta.url));
-loadEnv({ path: join(__dirname, "..", ".env") });
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";

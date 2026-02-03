@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "../providers/wagmi-provider";
+import { WalletDropdownProvider } from "../components/connect-wallet";
 
 export const metadata: Metadata = {
   title: "MonetaDEX - Best Rates Across All DEXs",
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <Providers>{children}</Providers>
+        <Providers>
+          <WalletDropdownProvider>{children}</WalletDropdownProvider>
+        </Providers>
       </body>
     </html>
   );
