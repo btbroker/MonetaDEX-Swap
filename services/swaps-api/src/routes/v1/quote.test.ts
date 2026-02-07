@@ -1,5 +1,70 @@
 import { describe, it, expect } from "vitest";
-import { QuoteRequestSchema } from "@fortuna/shared";
+import { QuoteRequestSchema, type QuoteRequest, type Route } from "@fortuna/shared";
+import { enrichRoutesWithBaseUnits, QuoteRequestSchemaApi } from "./quote.js";
+
+describe("QuoteRequestSchemaApi (amountIn base-units validation)", () => {
+  const validBase = {
+    fromChainId: 1,
+    toChainId: 1,
+    fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    toToken: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+  };
+
+  it("accepts amountIn as base-units integer string (e.g. '100')", () => {
+    const result = QuoteRequestSchemaApi.safeParse({
+      ...validBase,
+      amountIn: "100",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.amountIn).toBe("100");
+    }
+  });
+
+  it("rejects human decimal string (e.g. '0.5')", () => {
+    const result = QuoteRequestSchemaApi.safeParse({
+      ...validBase,
+      amountIn: "0.5",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path?.includes("amountIn"))).toBe(true);
+      expect(result.error.message).toContain("base units");
+    }
+  });
+
+  it("rejects scientific or non-integer string (e.g. '1e6')", () => {
+    const result = QuoteRequestSchemaApi.safeParse({
+      ...validBase,
+      amountIn: "1e6",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path?.includes("amountIn"))).toBe(true);
+      expect(result.error.message).toContain("base units");
+    }
+  });
+
+  it("rejects '1000.0', '-1', '', '0' (non-integer or empty)", () => {
+    for (const amountIn of ["1000.0", "-1", "", "0"]) {
+      const result = QuoteRequestSchemaApi.safeParse({ ...validBase, amountIn });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some((i) => i.path?.includes("amountIn"))).toBe(true);
+      }
+    }
+  });
+
+  it("accepts '1' and '1000000000' (base-units integer strings)", () => {
+    for (const amountIn of ["1", "1000000000"]) {
+      const result = QuoteRequestSchemaApi.safeParse({ ...validBase, amountIn });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.amountIn).toBe(amountIn);
+      }
+    }
+  });
+});
 
 describe("QuoteRequestSchema", () => {
   it("should validate valid quote request", () => {
@@ -207,5 +272,129 @@ describe("Quote endpoint - Tool filtering", () => {
     });
 
     expect(query.allowedTools).toEqual(["Uniswap V3", "Curve", "Balancer"]);
+  });
+});
+
+describe("enrichRoutesWithBaseUnits", () => {
+  it("request.amountIn base units: USDC 1000 => amountInWei equals request.amountIn (no double toWei)", () => {
+    const USDC_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+    const BRLA_POLYGON = "0xE6A537a407488807F0bbeb0038B79004f19DDDFb";
+    // 1000 USDC in base units (6 decimals)
+    const amountInBaseUnits = "1000000000";
+    const request: QuoteRequest = {
+      fromChainId: 137,
+      toChainId: 137,
+      fromToken: USDC_POLYGON,
+      toToken: BRLA_POLYGON,
+      amountIn: amountInBaseUnits,
+      slippageTolerance: 0.5,
+    };
+    const route: Route = {
+      routeId: "test-137",
+      provider: "0x",
+      type: "swap",
+      fromChainId: 137,
+      toChainId: 137,
+      fromToken: USDC_POLYGON,
+      toToken: BRLA_POLYGON,
+      amountIn: amountInBaseUnits,
+      amountOut: "1666.24",
+      estimatedGas: "150000",
+      fees: "0.5",
+      steps: [],
+    };
+    const routes: Route[] = [route];
+    enrichRoutesWithBaseUnits(routes, request);
+
+    const r = route as Route & {
+      amountInWei?: string;
+      amountOutWei?: string;
+      amountInHuman?: string;
+      amountOutHuman?: string;
+      fromDecimals?: number;
+      toDecimals?: number;
+    };
+    expect(r.fromDecimals).toBe(6);
+    expect(r.toDecimals).toBe(18);
+    expect(r.amountInWei).toBe(amountInBaseUnits);
+    expect(request.amountIn).toBe(r.amountInWei);
+    expect(r.amountOutWei).toBe("1666240000000000000000");
+    expect(r.amountOutWei).not.toMatch(/\./);
+    expect(r.amountInWei).not.toMatch(/\./);
+    expect(r.amountInHuman).toBe("1000");
+    expect(r.amountOutHuman).toBe("1666.24");
+    expect(r.toSymbol).toBe("BRLA");
+    expect(r.fromSymbol).toBe("USDC");
+    // Deprecated: amountIn/amountOut are human for display
+    expect(route.amountIn).toBe("1000");
+    expect(route.amountOut).toBe("1666.24");
+  });
+
+  it("fills route-level amountOutWei/amountOutHuman from last step when only steps returned", () => {
+    const USDC_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+    const BRLA_POLYGON = "0xE6A537a407488807F0bbeb0038B79004f19DDDFb";
+    const amountInBaseUnits = "1000000000";
+    const request: QuoteRequest = {
+      fromChainId: 137,
+      toChainId: 137,
+      fromToken: USDC_POLYGON,
+      toToken: BRLA_POLYGON,
+      amountIn: amountInBaseUnits,
+      slippageTolerance: 0.5,
+    };
+    // Route with only steps populated (adapter returned step-level data, no top-level amountOutWei/amountOutHuman)
+    const route: Route = {
+      routeId: "test-step-only",
+      provider: "0x",
+      type: "swap",
+      fromChainId: 137,
+      toChainId: 137,
+      fromToken: USDC_POLYGON,
+      toToken: BRLA_POLYGON,
+      amountIn: "1000",
+      amountOut: "0", // placeholder; adapter only populated steps
+      estimatedGas: "150000",
+      fees: "0",
+      steps: [
+        {
+          type: "swap",
+          provider: "0x",
+          fromChainId: 137,
+          toChainId: 137,
+          fromToken: USDC_POLYGON,
+          toToken: BRLA_POLYGON,
+          amountIn: "1000",
+          amountOut: "2500",
+        },
+        {
+          type: "swap",
+          provider: "0x",
+          fromChainId: 137,
+          toChainId: 137,
+          fromToken: BRLA_POLYGON,
+          toToken: BRLA_POLYGON,
+          amountIn: "2500",
+          amountOut: "5231.42",
+          amountOutWei: "5231420000000000000000",
+          amountOutHuman: "5231.42",
+        },
+      ],
+    };
+    const routes: Route[] = [route];
+    enrichRoutesWithBaseUnits(routes, request);
+
+    const r = route as Route & {
+      amountInWei?: string;
+      amountOutWei?: string;
+      amountInHuman?: string;
+      amountOutHuman?: string;
+      fromDecimals?: number;
+      toDecimals?: number;
+    };
+    expect(r.amountOutWei).toBe("5231420000000000000000");
+    expect(r.amountOutHuman).toBe("5231.42");
+    expect(r.toDecimals).toBe(18);
+    expect(r.amountInWei).toBe(amountInBaseUnits);
+    expect(r.fromDecimals).toBe(6);
   });
 });

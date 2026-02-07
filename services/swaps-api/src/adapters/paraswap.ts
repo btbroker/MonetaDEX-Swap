@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * Paraswap (Velora) adapter for same-chain swaps
@@ -26,7 +27,7 @@ export class ParaswapAdapter extends BaseAdapter {
     this.useMock = !this.apiKey;
 
     if (this.useMock) {
-      logger.warn("Paraswap adapter running in mock mode (PARASWAP_API_KEY not set)");
+      logger.info("Paraswap adapter: no API key; will attempt public (unauthenticated) requests");
     }
   }
 
@@ -69,7 +70,8 @@ export class ParaswapAdapter extends BaseAdapter {
   }
 
   async getQuote(request: QuoteRequest): Promise<Route[]> {
-    // Only handle same-chain swaps
+    if (!this.apiKey) return [];
+
     if (request.fromChainId !== request.toChainId) {
       return [];
     }
@@ -96,14 +98,7 @@ export class ParaswapAdapter extends BaseAdapter {
     }
 
     try {
-      let routes: Route[];
-
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
-
+      const routes = await this.getRealQuote(request);
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
       quoteMetricsTracker.recordSuccess(
@@ -153,14 +148,18 @@ export class ParaswapAdapter extends BaseAdapter {
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
+    // Paraswap expects amount in wei; request.amountIn is already base units
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+
     // Paraswap prices endpoint
     const url = `${this.baseUrl}/prices`;
     const params = new URLSearchParams({
       srcToken: request.fromToken,
       destToken: request.toToken,
       amount: request.amountIn,
-      srcDecimals: "18", // We'd need to fetch this, but Paraswap can handle it
-      destDecimals: "18",
+      srcDecimals: fromDecimals.toString(),
+      destDecimals: toDecimals.toString(),
       side: "SELL",
       network: chainId.toString(),
       ...(feeRecipient && {
@@ -208,6 +207,16 @@ export class ParaswapAdapter extends BaseAdapter {
       timeout: 8000,
     });
 
+    if (response.status === 401 || response.status === 403) {
+      const err = new Error("Paraswap API auth required") as Error & { statusCode?: number };
+      err.statusCode = response.status;
+      throw err;
+    }
+    if (response.status === 404) {
+      const err = new Error("Paraswap API unsupported") as Error & { statusCode?: number };
+      err.statusCode = 404;
+      throw err;
+    }
     if (response.status !== 200) {
       throw new Error(`Paraswap API returned status ${response.status}`);
     }
@@ -227,13 +236,15 @@ export class ParaswapAdapter extends BaseAdapter {
     // Calculate price impact (Paraswap provides maxImpactReached flag)
     const priceImpactBps = quote.maxImpactReached ? 100 : undefined; // If max impact reached, it's high
 
+    // Paraswap returns amounts in wei; normalize to human for consistent display/ranking
+    const amountInHuman = fromWei(quote.srcAmount, fromDecimals);
+    const amountOutHuman = fromWei(quote.destAmount, toDecimals);
+
     // Calculate fees
     // Paraswap includes partner fee in the quote, so destAmount already accounts for it
     const platformFeeBps = getPlatformFeeBps();
-    const destAmount = parseFloat(quote.destAmount);
-    const platformFee = (destAmount * platformFeeBps) / 10000;
-    
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -243,8 +254,8 @@ export class ParaswapAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.srcAmount,
-      amountOut: quote.destAmount, // Already net of partner fee
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
       estimatedGas: quote.gasCost || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -256,8 +267,8 @@ export class ParaswapAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.srcAmount,
-          amountOut: quote.destAmount,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["Paraswap"],
@@ -275,9 +286,9 @@ export class ParaswapAdapter extends BaseAdapter {
    * Get mock quote (fallback when API key not available)
    */
   private async getMockQuote(request: QuoteRequest): Promise<Route[]> {
-    // Mock: Calculate a simple swap with 0.25% DEX fee + 0.1% platform fee
-    // Paraswap often finds competitive prices
-    const amountIn = parseFloat(request.amountIn);
+    // Mock: request.amountIn is wei; convert to human for fee math
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const amountIn = parseFloat(fromWei(request.amountIn, fromDecimals));
     const dexFeeRate = 0.0025; // 0.25% DEX fee
     const amountAfterDexFee = amountIn * (1 - dexFeeRate);
     const platformFeeBps = getPlatformFeeBps();
@@ -298,7 +309,7 @@ export class ParaswapAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: request.amountIn,
+      amountIn: fromWei(request.amountIn, fromDecimals),
       amountOut: amountOut.toFixed(18),
       estimatedGas: "150000", // Mock gas estimate
       fees: fees.toFixed(18),
@@ -311,7 +322,7 @@ export class ParaswapAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: request.amountIn,
+          amountIn: fromWei(request.amountIn, fromDecimals),
           amountOut: amountOut.toFixed(18),
         } as RouteStep,
       ],

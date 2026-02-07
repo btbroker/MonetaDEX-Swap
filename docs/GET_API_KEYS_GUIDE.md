@@ -161,7 +161,7 @@ SUSHISWAP_API_KEY=your_sushiswap_key_here
 
 **Add to `.env`**:
 ```env
-OKX_API_KEY=your_okx_key_here
+OKX_ACCESS_KEY=your_okx_key_here
 ```
 
 ---
@@ -301,7 +301,7 @@ KYBERSWAP_API_KEY=your_key_here
 ONEINCH_API_KEY=your_key_here
 PARASWAP_API_KEY=your_key_here
 SUSHISWAP_API_KEY=your_key_here
-OKX_API_KEY=your_key_here
+OKX_ACCESS_KEY=your_key_here
 
 # Additional (Get Later)
 OPENOCEAN_API_KEY=your_key_here

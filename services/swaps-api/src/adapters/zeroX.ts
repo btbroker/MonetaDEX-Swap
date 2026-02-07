@@ -7,7 +7,13 @@ import { rateLimiter, getRateLimitConfig } from "../utils/rate-limiter.js";
 import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
+import { DEBUG_QUOTES, safeQueryParams, sanitizeResponseMessage } from "../utils/debug-quotes.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import {
+  getTokenDecimals,
+  toWei,
+  fromWei,
+} from "../utils/token-decimals.js";
 
 /**
  * 0x adapter for same-chain swaps
@@ -106,13 +112,12 @@ export class ZeroXAdapter extends BaseAdapter {
     }
 
     try {
-      let routes: Route[];
-
+      // No key = no real quote; do not return mock/fake routes (regulated onboarding).
       if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
+        return [];
       }
+
+      const routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -127,7 +132,8 @@ export class ZeroXAdapter extends BaseAdapter {
     } catch (error) {
       const responseTime = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      providerHealthTracker.recordFailure(this.name, errorMessage);
+      const statusCode = (error as Error & { statusCode?: number }).statusCode;
+      providerHealthTracker.recordFailure(this.name, errorMessage, statusCode != null ? { statusCode } : undefined);
       quoteMetricsTracker.recordFailure(this.name, responseTime);
 
       logger.error({ error, provider: this.name }, "Failed to get quote from 0x");
@@ -135,101 +141,184 @@ export class ZeroXAdapter extends BaseAdapter {
     }
   }
 
+  /** Supported chain IDs for 0x Swap API v2 (chainId query param). */
+  private static readonly SUPPORTED_CHAIN_IDS = new Set([
+    1, 10, 56, 137, 8453, 42161, 43114, 534352, 5000, 81457, 34443,
+  ]);
+
+  /** v2: single base URL for all chains; chain set via chainId param. */
+  private static readonly V2_BASE_URL = "https://api.0x.org";
+
+  /** Taker address for 0x v2 /quote. Uses TAKER_ADDRESS env if valid, else feeRecipient. Returns undefined if neither is available (taker omitted from query). */
+  private static getTakerAddress(feeRecipient?: string): string | undefined {
+    const env = process.env.TAKER_ADDRESS?.trim();
+    if (env && /^0x[a-fA-F0-9]{40}$/.test(env)) return env;
+    if (feeRecipient && /^0x[a-fA-F0-9]{40}$/.test(feeRecipient)) return feeRecipient;
+    return undefined;
+  }
+
   /**
-   * Get quote from real 0x API
+   * Get quote from 0x Swap API v2 (AllowanceHolder). Uses /swap/allowance-holder/quote with chainId, taker, sellAmount in base units.
    */
   private async getRealQuote(request: QuoteRequest): Promise<Route[]> {
-    // Map chain IDs to 0x chain names
-    const chainMap: Record<number, string> = {
-      1: "ethereum",
-      10: "optimism",
-      56: "bsc",
-      137: "polygon",
-      8453: "base",
-      42161: "arbitrum",
-      43114: "avalanche",
-      534352: "scroll",
-      5000: "mantle",
-      81457: "blast",
-      34443: "mode",
-    };
-
-    const chainName = chainMap[request.fromChainId];
-    if (!chainName) {
-      throw new Error(`Unsupported chain: ${request.fromChainId}`);
+    const chainId = request.fromChainId;
+    if (!ZeroXAdapter.SUPPORTED_CHAIN_IDS.has(chainId)) {
+      throw new Error(`Unsupported chain: ${chainId}`);
+    }
+    const sellToken = request.fromToken?.trim() ?? "";
+    const buyToken = request.toToken?.trim() ?? "";
+    const sellAmount = request.amountIn?.trim() ?? "";
+    if (!sellToken || !buyToken || !sellAmount) {
+      throw new Error("0x quote requires sellToken, buyToken, and sellAmount");
     }
 
-    // Get fee recipient for affiliate fees
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
+    const taker = ZeroXAdapter.getTakerAddress(feeRecipient);
 
-    const url = `${this.baseUrl}/swap/v1/quote`;
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+
+    const slippageBps = Math.round((request.slippageTolerance ?? 0.5) * 100);
     const params = new URLSearchParams({
-      sellToken: request.fromToken,
-      buyToken: request.toToken,
-      sellAmount: request.amountIn,
-      slippagePercentage: (request.slippageTolerance || 0.5).toString(),
-      ...(feeRecipient && {
-        affiliateAddress: feeRecipient,
-        feeRecipient: feeRecipient,
-        buyTokenPercentageFee: (feeBps / 100).toFixed(4), // 0x expects percentage (0.1 for 10 BPS)
+      chainId: String(chainId),
+      sellToken,
+      buyToken,
+      sellAmount,
+      slippageBps: String(Math.min(10000, Math.max(0, slippageBps))),
+      ...(taker ? { taker } : {}),
+      ...(feeRecipient && feeBps > 0 && {
+        swapFeeRecipient: feeRecipient,
+        swapFeeBps: String(feeBps),
+        swapFeeToken: buyToken,
       }),
     });
+    const path = "/swap/allowance-holder/quote";
+    const url = `${ZeroXAdapter.V2_BASE_URL}${path}`;
+    const fullUrl = `${url}?${params.toString()}`;
+
+    const headers: Record<string, string> = {
+      "0x-version": "v2",
+    };
+    if (this.apiKey) headers["0x-api-key"] = this.apiKey;
+
+    if (DEBUG_QUOTES) {
+      logger.info(
+        {
+          provider: this.name,
+          method: "GET",
+          url,
+          queryKeys: Array.from(params.keys()),
+          queryParams: safeQueryParams(params),
+          chainId: request.fromChainId,
+          fromToken: request.fromToken,
+          toToken: request.toToken,
+          amountInWei: request.amountIn,
+        },
+        "DEBUG_QUOTES: outbound request"
+      );
+    }
 
     const response = await httpRequest<{
-      price: string;
-      guaranteedPrice: string;
-      estimatedPriceImpact: string;
       buyAmount: string;
       sellAmount: string;
       buyToken: string;
       sellToken: string;
-      allowanceTarget: string;
-      to: string;
-      data: string;
-      value: string;
-      gas: string;
-      gasPrice: string;
-      sources: Array<{ name: string; proportion: string }>;
-    }>(`${url}?${params.toString()}`, {
+      liquidityAvailable?: boolean;
+      route?: { fills: Array<{ source: string; proportionBps?: string }> };
+      transaction?: { to: string; data: string; value: string; gas: string; gasPrice: string };
+      gas?: string;
+      gasPrice?: string;
+    }>(fullUrl, {
       method: "GET",
-      headers: this.apiKey ? { "0x-api-key": this.apiKey } : {},
+      headers,
       timeout: 8000,
     });
 
+    const data = response.data as Record<string, unknown> | undefined;
+    const reason = data?.reason ?? data?.message ?? data?.error ?? (typeof data === "string" ? (data as string).slice(0, 200) : undefined);
+
+    if (response.status === 404) {
+      if (DEBUG_QUOTES) {
+        logger.info(
+          {
+            provider: this.name,
+            httpStatus: 404,
+            didReturnRouteCount: 0,
+            safeMessage: "Unsupported or deprecated endpoint (404); ensure 0x Swap API v2 allowance-holder is used",
+            reason: sanitizeResponseMessage(reason),
+          },
+          "DEBUG_QUOTES: response"
+        );
+      }
+      const err = new Error("0x API v2 returned 404 (unsupported or deprecated endpoint)") as Error & { statusCode?: number };
+      err.statusCode = 404;
+      throw err;
+    }
     if (response.status !== 200) {
-      throw new Error(`0x API returned status ${response.status}`);
+      if (DEBUG_QUOTES) {
+        const payload: Record<string, unknown> = {
+          provider: this.name,
+          httpStatus: response.status,
+          didReturnRouteCount: 0,
+          safeMessage: "provider returned 0 routes",
+        };
+        if (reason !== undefined) payload.reason = sanitizeResponseMessage(reason);
+        logger.info(payload, "DEBUG_QUOTES: response");
+      }
+      const err = new Error(`0x API returned status ${response.status}`) as Error & { statusCode?: number };
+      err.statusCode = response.status;
+      throw err;
     }
 
     const quote = response.data;
+    const buyAmountWei = quote?.buyAmount?.trim();
+    const noLiquidity = !buyAmountWei || buyAmountWei === "0";
+    const liquidityAvailable = quote?.liquidityAvailable === true;
+    if (noLiquidity || !liquidityAvailable) {
+      const msgReason = (data?.reason ?? data?.message ?? data?.error ?? (noLiquidity ? "No buy amount in response" : "liquidityAvailable is not true")) as unknown;
+      if (DEBUG_QUOTES) {
+        logger.info(
+          {
+            provider: this.name,
+            httpStatus: response.status,
+            didReturnRouteCount: 0,
+            safeMessage: "provider returned 0 routes",
+            reason: sanitizeResponseMessage(msgReason),
+          },
+          "DEBUG_QUOTES: response"
+        );
+      }
+      const err = new Error(sanitizeResponseMessage(msgReason)) as Error & { statusCode?: number };
+      err.statusCode = 200;
+      throw err;
+    }
 
-    // Extract tools used from sources
-    const toolsUsed: Tool[] = quote.sources.map((source) => source.name);
+    if (DEBUG_QUOTES) {
+      logger.info(
+        { provider: this.name, httpStatus: response.status, didReturnRouteCount: 1 },
+        "DEBUG_QUOTES: response"
+      );
+    }
 
-    // Calculate price impact (0x returns as decimal, convert to bps)
-    const priceImpactBps = quote.estimatedPriceImpact
-      ? Math.round(parseFloat(quote.estimatedPriceImpact) * 10000)
-      : undefined;
+    const amountInHuman = fromWei(quote.sellAmount, fromDecimals);
+    const amountOutHuman = fromWei(quote.buyAmount, toDecimals);
 
-    // Calculate fees
-    // Note: With affiliate fees, 0x automatically routes fees to our recipient
-    // The fees shown here are the total DEX fees, not our platform fee
-    const sellAmount = parseFloat(quote.sellAmount);
-    const buyAmount = parseFloat(quote.buyAmount);
-    const price = parseFloat(quote.price);
-    const expectedBuyAmount = sellAmount * price;
-    const totalFees = expectedBuyAmount - buyAmount;
-    
-    // Calculate our platform fee (10 BPS of output)
+    const toolsUsed: Tool[] = (quote.route?.fills ?? []).map((f) => f.source);
+
+    const gasStr = quote.transaction?.gas ?? quote.gas ?? "150000";
+    const priceImpactBps = undefined;
+
+    const sell = Number(parseFloat(amountInHuman));
+    const buy = Number(parseFloat(amountOutHuman));
+    const maybePrice = (quote as unknown as { price?: unknown })?.price;
+    const price = typeof maybePrice === "string" ? parseFloat(maybePrice) : sell > 0 ? buy / sell : 0;
+    const expectedBuyAmount = sell * price;
+    const totalFees = expectedBuyAmount - buy;
     const platformFeeBps = getPlatformFeeBps();
-    const platformFee = (buyAmount * platformFeeBps) / 10000;
-    
-    // Total fees = DEX fees + our platform fee
+    const platformFee = (buy * platformFeeBps) / 10000;
     const fees = totalFees + platformFee;
 
-    // Note: With 0x affiliate fees, the buyAmount already accounts for our platform fee
-    // 0x automatically routes the fee to our recipient address
-    // The amountOut shown to users is the net amount they receive
     const route: Omit<Route, "routeId"> = {
       provider: this.name,
       type: "swap",
@@ -237,9 +326,9 @@ export class ZeroXAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.sellAmount,
-      amountOut: quote.buyAmount, // Already net of platform fee via affiliate
-      estimatedGas: quote.gas || "150000",
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
+      estimatedGas: gasStr,
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
       steps: [
@@ -250,8 +339,8 @@ export class ZeroXAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.sellAmount,
-          amountOut: quote.buyAmount,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed,
@@ -269,8 +358,9 @@ export class ZeroXAdapter extends BaseAdapter {
    * Get mock quote (fallback when API key not available)
    */
   private async getMockQuote(request: QuoteRequest): Promise<Route[]> {
-    // Mock: Calculate a simple swap with 0.3% DEX fee + 0.1% platform fee
-    const amountIn = parseFloat(request.amountIn);
+    // Mock: request.amountIn is wei; convert to human for fee math
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const amountIn = parseFloat(fromWei(request.amountIn, fromDecimals));
     const dexFeeRate = 0.003; // 0.3% DEX fee
     const amountAfterDexFee = amountIn * (1 - dexFeeRate);
     const platformFeeBps = getPlatformFeeBps();
@@ -291,7 +381,7 @@ export class ZeroXAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: request.amountIn,
+      amountIn: fromWei(request.amountIn, fromDecimals),
       amountOut: amountOut.toFixed(18),
       estimatedGas: "150000", // Mock gas estimate
       fees: fees.toFixed(18),
@@ -304,7 +394,7 @@ export class ZeroXAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: request.amountIn,
+          amountIn: fromWei(request.amountIn, fromDecimals),
           amountOut: amountOut.toFixed(18),
         } as RouteStep,
       ],
@@ -362,42 +452,37 @@ export class ZeroXAdapter extends BaseAdapter {
         throw new Error(`Unsupported chain: ${request.fromChainId}`);
       }
 
-      // Get fee recipient for affiliate fees
       const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
       const feeBps = getPlatformFeeBps();
+      const taker = ZeroXAdapter.getTakerAddress(feeRecipient);
+      const slippageBps = Math.round((request.slippageTolerance ?? 0.5) * 100);
 
-      const url = `${this.baseUrl}/swap/v1/quote`;
       const params = new URLSearchParams({
+        chainId: String(request.fromChainId),
         sellToken: request.fromToken,
         buyToken: request.toToken,
         sellAmount: request.amountIn,
-        slippagePercentage: (request.slippageTolerance || 0.5).toString(),
-        takerAddress: request.recipient,
-        ...(feeRecipient && {
-          affiliateAddress: feeRecipient,
-          feeRecipient: feeRecipient,
-          buyTokenPercentageFee: (feeBps / 100).toFixed(4), // 0x expects percentage (0.1 for 10 BPS)
+        slippageBps: String(Math.min(10000, Math.max(0, slippageBps))),
+        ...(taker ? { taker } : {}),
+        ...(feeRecipient && feeBps > 0 && {
+          swapFeeRecipient: feeRecipient,
+          swapFeeBps: String(feeBps),
+          swapFeeToken: request.toToken,
         }),
       });
+      const url = `${ZeroXAdapter.V2_BASE_URL}/swap/allowance-holder/quote?${params.toString()}`;
+      const headers: Record<string, string> = { "0x-version": "v2" };
+      if (this.apiKey) headers["0x-api-key"] = this.apiKey;
 
       const response = await httpRequest<{
-        to: string;
-        data: string;
-        value: string;
-        gas: string;
-        gasPrice: string;
-      }>(`${url}?${params.toString()}`, {
-        method: "GET",
-        headers: this.apiKey ? { "0x-api-key": this.apiKey } : {},
-        timeout: 8000,
-      });
+        transaction?: { to: string; data: string; value: string; gas: string; gasPrice: string };
+      }>(url, { method: "GET", headers, timeout: 8000 });
 
-      if (response.status !== 200) {
-        throw new Error(`0x API returned status ${response.status}`);
+      if (response.status !== 200 || !response.data.transaction) {
+        throw new Error(`0x API returned status ${response.status} or missing transaction`);
       }
 
-      const tx = response.data;
-
+      const tx = response.data.transaction;
       return {
         routeId,
         txData: tx.data,

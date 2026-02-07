@@ -26,7 +26,7 @@ One fee config (15 BPS + `FEE_RECIPIENT_*` per chain) is used for all providers;
 
 **App still showing mock prices?**  
 1. **Restart the swaps-api** after adding keys (so it loads `services/swaps-api/.env`).  
-2. **Check providers:** open **http://localhost:3001/v1/providers** — you should see `withKeys: ["zerox", "okx"]` (or whichever keys you set). If they’re in `mockMode`, the API didn’t load `.env` or the keys aren’t in that file.  
+2. **Check providers:** open **http://localhost:3001/v1/providers** — you should see `withKeys: ["zerox", "okx"]` (or whichever keys you set). If they’re in `disabled`, the API didn’t load `.env` or the keys aren’t in that file.  
 3. **Frontend** uses `NEXT_PUBLIC_API_URL` (default `http://localhost:3001`). Ensure the API is running on that port.
 
 ---

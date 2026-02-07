@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * 1inch adapter for same-chain swaps
@@ -97,14 +98,8 @@ export class OneInchAdapter extends BaseAdapter {
     }
 
     try {
-      let routes: Route[];
-
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
-
+      if (this.useMock) return [];
+      const routes = await this.getRealQuote(request);
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
       quoteMetricsTracker.recordSuccess(
@@ -154,12 +149,17 @@ export class OneInchAdapter extends BaseAdapter {
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
+    // 1inch expects amount in wei (smallest unit)
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+    const amountWei = toWei(request.amountIn, fromDecimals);
+
     // 1inch quote endpoint
     const url = `${this.baseUrl}/v5.2/${chainName}/quote`;
     const params = new URLSearchParams({
       fromTokenAddress: request.fromToken,
       toTokenAddress: request.toToken,
-      amount: request.amountIn,
+      amount: amountWei,
       ...(feeRecipient && {
         referrerAddress: feeRecipient,
         fee: (feeBps / 100).toFixed(2), // 1inch expects percentage (0.1 for 10 BPS)
@@ -197,18 +197,16 @@ export class OneInchAdapter extends BaseAdapter {
       });
     });
 
-    // Calculate price impact (1inch doesn't provide this directly, estimate from slippage)
-    const fromAmount = parseFloat(quote.fromTokenAmount);
-    const toAmount = parseFloat(quote.toTokenAmount);
+    // 1inch returns amounts in wei; normalize to human for consistent display/ranking
+    const amountInHuman = fromWei(quote.fromTokenAmount, fromDecimals);
+    const amountOutHuman = fromWei(quote.toTokenAmount, toDecimals);
+
     const priceImpactBps = undefined; // 1inch doesn't provide price impact in quote
 
     // Calculate fees
-    // 1inch includes referrer fee in the quote, so toTokenAmount already accounts for it
-    // We calculate our platform fee separately
     const platformFeeBps = getPlatformFeeBps();
-    const platformFee = (toAmount * platformFeeBps) / 10000;
-    
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -218,8 +216,8 @@ export class OneInchAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.fromTokenAmount,
-      amountOut: quote.toTokenAmount, // Already net of referrer fee
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
       estimatedGas: quote.estimatedGas?.toString() || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -231,8 +229,8 @@ export class OneInchAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.fromTokenAmount,
-          amountOut: quote.toTokenAmount,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["1inch"],

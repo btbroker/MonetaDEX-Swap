@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * OpenOcean adapter for same-chain swaps
@@ -26,7 +27,7 @@ export class OpenOceanAdapter extends BaseAdapter {
     this.useMock = !this.apiKey;
 
     if (this.useMock) {
-      logger.warn("OpenOcean adapter running in mock mode (OPENOCEAN_API_KEY not set)");
+      logger.info("OpenOcean adapter: no API key; will attempt public (unauthenticated) requests");
     }
   }
 
@@ -98,13 +99,7 @@ export class OpenOceanAdapter extends BaseAdapter {
     }
 
     try {
-      let routes: Route[];
-
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      const routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -151,16 +146,18 @@ export class OpenOceanAdapter extends BaseAdapter {
       throw new Error(`Unsupported chain: ${request.fromChainId}`);
     }
 
-    // Get fee recipient for referral fees
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
-    // OpenOcean quote endpoint (V4 API)
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+    const amountWei = toWei(request.amountIn, fromDecimals);
+
     const url = `${this.baseUrl}/v4/${chainId}/quote`;
     const params = new URLSearchParams({
       inTokenAddress: request.fromToken,
       outTokenAddress: request.toToken,
-      amountDecimals: request.amountIn,
+      amount: amountWei, // OpenOcean may expect wei; if 400, try amountDecimals with request.amountIn
       gasPrice: "20000000000", // 20 gwei default
       ...(feeRecipient && {
         referrer: feeRecipient,
@@ -189,6 +186,16 @@ export class OpenOceanAdapter extends BaseAdapter {
       timeout: 8000,
     });
 
+    if (response.status === 401 || response.status === 403) {
+      const err = new Error("OpenOcean API auth required") as Error & { statusCode?: number };
+      err.statusCode = response.status;
+      throw err;
+    }
+    if (response.status === 404) {
+      const err = new Error("OpenOcean API unsupported") as Error & { statusCode?: number };
+      err.statusCode = 404;
+      throw err;
+    }
     if (response.status !== 200 || response.data.code !== 200) {
       throw new Error(`OpenOcean API returned status ${response.status} or code ${response.data.code}`);
     }
@@ -210,14 +217,12 @@ export class OpenOceanAdapter extends BaseAdapter {
       ? Math.round(quote.priceImpact * 100) // Convert percentage to basis points
       : undefined;
 
-    // Calculate fees
-    // OpenOcean includes referrer fee in the quote, so outAmount already accounts for it
-    // We calculate our platform fee separately
-    const platformFeeBps = getPlatformFeeBps();
-    const outAmount = parseFloat(quote.outAmount);
-    const platformFee = (outAmount * platformFeeBps) / 10000;
+    const amountInHuman = fromWei(quote.inAmount, fromDecimals);
+    const amountOutHuman = fromWei(quote.outAmount, toDecimals);
 
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const platformFeeBps = getPlatformFeeBps();
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -227,8 +232,8 @@ export class OpenOceanAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.inAmount,
-      amountOut: quote.outAmount, // Already net of referrer fee
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
       estimatedGas: quote.estimatedGas?.toString() || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -240,8 +245,8 @@ export class OpenOceanAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.inAmount,
-          amountOut: quote.outAmount,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["OpenOcean"],

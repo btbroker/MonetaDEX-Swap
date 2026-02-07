@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useId } from "react";
 import { getSettings, saveSettings, type UserSettings } from "../lib/storage";
 
 interface SettingsProps {
@@ -10,6 +10,8 @@ interface SettingsProps {
 
 export function Settings({ onClose, onSave }: SettingsProps) {
   const [settings, setSettings] = useState<UserSettings>(getSettings());
+  const slippageId = `slippage-${useId().replace(/:/g, "")}`;
+  const priceImpactId = `price-impact-${useId().replace(/:/g, "")}`;
 
   const handleSave = () => {
     saveSettings(settings);
@@ -24,10 +26,12 @@ export function Settings({ onClose, onSave }: SettingsProps) {
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor={slippageId} className="block text-sm font-medium text-gray-700 mb-1">
               Slippage Tolerance (%)
             </label>
             <input
+              id={slippageId}
+              name="slippageTolerance"
               type="number"
               min="0"
               max="100"
@@ -44,10 +48,12 @@ export function Settings({ onClose, onSave }: SettingsProps) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor={priceImpactId} className="block text-sm font-medium text-gray-700 mb-1">
               Max Price Impact (basis points)
             </label>
             <input
+              id={priceImpactId}
+              name="maxPriceImpactBps"
               type="number"
               min="0"
               max="10000"
@@ -59,25 +65,20 @@ export function Settings({ onClose, onSave }: SettingsProps) {
                   maxPriceImpactBps: parseInt(e.target.value) || 0,
                 })
               }
+              aria-describedby={`${priceImpactId}-hint`}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p id={`${priceImpactId}-hint`} className="text-xs text-gray-500 mt-1" aria-hidden="true">
               {settings.maxPriceImpactBps / 100}% maximum price impact
             </p>
           </div>
         </div>
 
-        <div className="flex gap-2 mt-6">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
+        <div className="flex gap-3 mt-6">
+          <button type="button" onClick={onClose} className="btn-secondary flex-1">
             Cancel
           </button>
-          <button
-            onClick={handleSave}
-            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
+          <button type="button" onClick={handleSave} className="btn-primary flex-1">
             Save
           </button>
         </div>

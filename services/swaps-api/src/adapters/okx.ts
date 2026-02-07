@@ -1,32 +1,78 @@
+import { createHmac } from "crypto";
 import { BaseAdapter } from "./base.js";
 import type { QuoteRequest, TxRequest, TxResponse, Route, RouteStep, RouteType } from "@fortuna/shared";
 import { generateRouteId } from "../utils/routeId.js";
 import type { Tool } from "../registry/tool-registry.js";
-import { httpRequest, getApiKey } from "../utils/http-client.js";
+import { httpRequest } from "../utils/http-client.js";
 import { rateLimiter, getRateLimitConfig } from "../utils/rate-limiter.js";
 import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
+import { DEBUG_QUOTES, sanitizeResponseMessage } from "../utils/debug-quotes.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, fromWei } from "../utils/token-decimals.js";
+
+/** OKX env vars: OKX_ACCESS_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE. OKX_PROJECT_ID optional. */
+function getOkxCreds(): { apiKey: string; secretKey: string; passphrase: string } | undefined {
+  const apiKey = process.env.OKX_ACCESS_KEY?.trim();
+  const secretKey = process.env.OKX_SECRET_KEY?.trim();
+  const passphrase = process.env.OKX_PASSPHRASE?.trim();
+  if (!apiKey || !secretKey || !passphrase) return undefined;
+  return { apiKey, secretKey, passphrase };
+}
 
 /**
- * OKX DEX Aggregator adapter for same-chain swaps
- * Integrates with OKX DEX Aggregator API for aggregated liquidity
- * Falls back to mock mode if API key is not provided
+ * Compute OKX HMAC SHA256 + Base64 signature for prehash string.
+ * prehash = timestamp + method + pathWithQuery + (body ?? "").
+ * Exported for unit tests.
+ */
+export function computeOkxSignature(prehash: string, secretKey: string): string {
+  return createHmac("sha256", secretKey).update(prehash).digest("base64");
+}
+
+/**
+ * Build OKX REST auth headers per OKX docs (HMAC SHA256 + Base64).
+ * Prehash = timestamp + method + pathWithQuery + body. Never log secrets.
+ */
+function buildOkxHeaders(
+  method: string,
+  path: string,
+  queryString: string,
+  body: string | undefined,
+  creds: { apiKey: string; secretKey: string; passphrase: string }
+): Record<string, string> {
+  const pathWithQuery = queryString ? `${path}?${queryString}` : path;
+  const timestamp = new Date().toISOString();
+  const prehash = timestamp + method.toUpperCase() + pathWithQuery + (body ?? "");
+  const sign = computeOkxSignature(prehash, creds.secretKey);
+  const headers: Record<string, string> = {
+    "OK-ACCESS-KEY": creds.apiKey,
+    "OK-ACCESS-SIGN": sign,
+    "OK-ACCESS-TIMESTAMP": timestamp,
+    "OK-ACCESS-PASSPHRASE": creds.passphrase,
+  };
+  const projectId = process.env.OKX_PROJECT_ID?.trim();
+  if (projectId) headers["OK-ACCESS-PROJECT"] = projectId;
+  return headers;
+}
+
+/**
+ * OKX DEX Aggregator adapter for same-chain swaps.
+ * Requires OKX_ACCESS_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE. If any missing, no requests are made and provider shows missing-key.
  */
 export class OkxAdapter extends BaseAdapter {
   name = "okx";
-  private readonly apiKey?: string;
+  private readonly creds: { apiKey: string; secretKey: string; passphrase: string } | undefined;
   private readonly baseUrl = "https://web3.okx.com";
   private readonly useMock: boolean;
 
   constructor() {
     super();
-    this.apiKey = getApiKey("OKX_API_KEY");
-    this.useMock = !this.apiKey;
+    this.creds = getOkxCreds();
+    this.useMock = !this.creds;
 
     if (this.useMock) {
-      logger.warn("OKX adapter running in mock mode (OKX_API_KEY not set)");
+      logger.warn("OKX adapter disabled: OKX_ACCESS_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE required");
     }
   }
 
@@ -65,7 +111,8 @@ export class OkxAdapter extends BaseAdapter {
   }
 
   async getQuote(request: QuoteRequest): Promise<Route[]> {
-    // Only handle same-chain swaps
+    if (!this.creds) return [];
+
     if (request.fromChainId !== request.toChainId) {
       return [];
     }
@@ -92,13 +139,8 @@ export class OkxAdapter extends BaseAdapter {
     }
 
     try {
-      let routes: Route[];
-
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      if (this.useMock) return [];
+      const routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -145,12 +187,14 @@ export class OkxAdapter extends BaseAdapter {
       throw new Error(`Unsupported chain: ${request.fromChainId}`);
     }
 
-    // Get fee recipient for partner fees
+    // OKX API expects amounts in minimal units; request.amountIn is already base units
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
-    // OKX quote endpoint
-    const url = `${this.baseUrl}/api/v6/dex/aggregator/quote`;
+    const path = "/api/v6/dex/aggregator/quote";
     const params = new URLSearchParams({
       chainIndex: chainIndex,
       amount: request.amountIn,
@@ -162,6 +206,20 @@ export class OkxAdapter extends BaseAdapter {
         feeBps: feeBps.toString(),
       }),
     });
+    const queryString = params.toString();
+    const headers = buildOkxHeaders("GET", path, queryString, undefined, this.creds!);
+
+    if (DEBUG_QUOTES) {
+      logger.info(
+        {
+          provider: this.name,
+          chainIndex,
+          amountIn: request.amountIn,
+          headerNames: Object.keys(headers),
+        },
+        "DEBUG_QUOTES: outbound request"
+      );
+    }
 
     const response = await httpRequest<{
       code: string;
@@ -174,25 +232,47 @@ export class OkxAdapter extends BaseAdapter {
           percentage: number;
         }>;
       }>;
-    }>(`${url}?${params.toString()}`, {
+    }>(`${this.baseUrl}${path}?${queryString}`, {
       method: "GET",
-      headers: this.apiKey ? { "X-API-KEY": this.apiKey } : {},
+      headers,
       timeout: 8000,
     });
 
+    const quotes = response.data?.data;
+    const didReturnRouteCount =
+      response.status === 200 && response.data?.code === "0" && Array.isArray(quotes) ? quotes.length : 0;
+    if (DEBUG_QUOTES) {
+      const data = response.data as Record<string, unknown> | undefined;
+      const reason = data?.msg ?? data?.message ?? data?.error;
+      logger.info(
+        {
+          provider: this.name,
+          httpStatus: response.status,
+          didReturnRouteCount,
+          reason: reason !== undefined ? sanitizeResponseMessage(reason) : undefined,
+        },
+        "DEBUG_QUOTES: response"
+      );
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      const err = new Error("OKX API auth required") as Error & { statusCode?: number };
+      err.statusCode = response.status;
+      throw err;
+    }
     if (response.status !== 200 || response.data.code !== "0") {
       throw new Error(`OKX API returned status ${response.status} or code ${response.data.code}`);
     }
 
-    const quotes = response.data.data;
     if (!quotes || quotes.length === 0) {
       throw new Error("No quotes returned from OKX");
     }
 
-    // Use the best quote (first one)
     const quote = quotes[0];
 
-    // Extract tools used from route
+    // OKX returns amountOut in wei; normalize to human for correct display and ranking
+    const amountOutHuman = fromWei(quote.amountOut, toDecimals);
+
     const toolsUsed: Tool[] = [];
     if (quote.route) {
       quote.route.forEach((step) => {
@@ -202,17 +282,13 @@ export class OkxAdapter extends BaseAdapter {
       });
     }
 
-    // Calculate price impact in basis points
     const priceImpactBps = quote.priceImpact
-      ? Math.round(parseFloat(quote.priceImpact) * 100) // Convert percentage to basis points
+      ? Math.round(parseFloat(quote.priceImpact) * 100)
       : undefined;
 
-    // Calculate fees
     const platformFeeBps = getPlatformFeeBps();
-    const amountOut = parseFloat(quote.amountOut);
-    const platformFee = (amountOut * platformFeeBps) / 10000;
-
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -223,7 +299,7 @@ export class OkxAdapter extends BaseAdapter {
       fromToken: request.fromToken,
       toToken: request.toToken,
       amountIn: request.amountIn,
-      amountOut: quote.amountOut, // Already net of partner fee
+      amountOut: amountOutHuman,
       estimatedGas: quote.gas?.toString() || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -236,7 +312,7 @@ export class OkxAdapter extends BaseAdapter {
           fromToken: request.fromToken,
           toToken: request.toToken,
           amountIn: request.amountIn,
-          amountOut: quote.amountOut,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["OKX"],
@@ -254,8 +330,9 @@ export class OkxAdapter extends BaseAdapter {
    * Get mock quote (fallback when API key not available)
    */
   private async getMockQuote(request: QuoteRequest): Promise<Route[]> {
-    // Mock: Calculate a simple swap with 0.25% DEX fee + 0.1% platform fee
-    const amountIn = parseFloat(request.amountIn);
+    // Mock: request.amountIn is wei; convert to human for fee math
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const amountIn = parseFloat(fromWei(request.amountIn, fromDecimals));
     const dexFeeRate = 0.0025; // 0.25% DEX fee
     const amountAfterDexFee = amountIn * (1 - dexFeeRate);
     const platformFeeBps = getPlatformFeeBps();
@@ -276,7 +353,7 @@ export class OkxAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: request.amountIn,
+      amountIn: fromWei(request.amountIn, fromDecimals),
       amountOut: amountOut.toFixed(18),
       estimatedGas: "150000", // Mock gas estimate
       fees: fees.toFixed(18),
@@ -289,7 +366,7 @@ export class OkxAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: request.amountIn,
+          amountIn: fromWei(request.amountIn, fromDecimals),
           amountOut: amountOut.toFixed(18),
         } as RouteStep,
       ],
@@ -348,8 +425,7 @@ export class OkxAdapter extends BaseAdapter {
       const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
       const feeBps = getPlatformFeeBps();
 
-      // OKX swap endpoint
-      const url = `${this.baseUrl}/api/v6/dex/aggregator/swap`;
+      const path = "/api/v6/dex/aggregator/swap";
       const params = new URLSearchParams({
         chainIndex: chainIndex,
         amount: request.amountIn,
@@ -363,6 +439,8 @@ export class OkxAdapter extends BaseAdapter {
           feeBps: feeBps.toString(),
         }),
       });
+      const queryString = params.toString();
+      const headers = buildOkxHeaders("GET", path, queryString, undefined, this.creds!);
 
       const response = await httpRequest<{
         code: string;
@@ -373,12 +451,17 @@ export class OkxAdapter extends BaseAdapter {
           gas: number;
           gasPrice: string;
         };
-      }>(`${url}?${params.toString()}`, {
+      }>(`${this.baseUrl}${path}?${queryString}`, {
         method: "GET",
-        headers: this.apiKey ? { "X-API-KEY": this.apiKey } : {},
+        headers,
         timeout: 8000,
       });
 
+      if (response.status === 401 || response.status === 403) {
+        const err = new Error("OKX API auth required") as Error & { statusCode?: number };
+        err.statusCode = response.status;
+        throw err;
+      }
       if (response.status !== 200 || response.data.code !== "0") {
         throw new Error(`OKX API returned status ${response.status} or code ${response.data.code}`);
       }

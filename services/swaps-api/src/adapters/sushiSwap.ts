@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * SushiSwap adapter for same-chain swaps
@@ -94,11 +95,8 @@ export class SushiSwapAdapter extends BaseAdapter {
     try {
       let routes: Route[];
 
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      if (this.useMock) return [];
+      routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -149,12 +147,17 @@ export class SushiSwapAdapter extends BaseAdapter {
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
+    // SushiSwap API expects amount in wei (smallest unit)
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+    const amountWei = toWei(request.amountIn, fromDecimals);
+
     // SushiSwap quote endpoint
     const url = `${this.baseUrl}/quote/v7/${chainId}`;
     const params = new URLSearchParams({
       tokenIn: request.fromToken,
       tokenOut: request.toToken,
-      amount: request.amountIn,
+      amount: amountWei,
       maxSlippage: ((request.slippageTolerance || 0.5) / 100).toString(),
       ...(feeRecipient && {
         feeRecipient: feeRecipient,
@@ -194,17 +197,17 @@ export class SushiSwapAdapter extends BaseAdapter {
       });
     }
 
-    // Calculate price impact in basis points
+    // SushiSwap returns amounts in wei; normalize to human for consistent display/ranking
+    const amountInHuman = fromWei(quote.amountIn, fromDecimals);
+    const amountOutHuman = fromWei(quote.amountOut, toDecimals);
+
     const priceImpactBps = quote.priceImpact
-      ? Math.round(parseFloat(quote.priceImpact) * 10000) // Convert fraction to basis points
+      ? Math.round(parseFloat(quote.priceImpact) * 10000)
       : undefined;
 
-    // Calculate fees
     const platformFeeBps = getPlatformFeeBps();
-    const amountOut = parseFloat(quote.amountOut);
-    const platformFee = (amountOut * platformFeeBps) / 10000;
-
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -214,9 +217,9 @@ export class SushiSwapAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.amountIn,
-      amountOut: quote.amountOut, // Already net of partner fee
-      estimatedGas: "150000", // SushiSwap doesn't provide gas estimate in quote
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
+      estimatedGas: "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
       steps: [
@@ -227,8 +230,8 @@ export class SushiSwapAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.amountIn,
-          amountOut: quote.amountOut,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["SushiSwap"],

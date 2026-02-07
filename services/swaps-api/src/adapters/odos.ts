@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * Odos adapter for same-chain swaps
@@ -33,7 +34,7 @@ export class OdosAdapter extends BaseAdapter {
     this.partnerCode = partnerCodeEnv ? parseInt(partnerCodeEnv, 10) : undefined;
 
     if (this.useMock) {
-      logger.warn("Odos adapter running in mock mode (ODOS_API_KEY not set)");
+      logger.info("Odos adapter: no API key; will attempt public (unauthenticated) requests");
     }
   }
 
@@ -102,13 +103,7 @@ export class OdosAdapter extends BaseAdapter {
     }
 
     try {
-      let routes: Route[];
-
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      const routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -159,7 +154,11 @@ export class OdosAdapter extends BaseAdapter {
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
-    // Odos quote endpoint (V2)
+    // Odos expects amount in wei (smallest unit)
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+
+    // Odos quote endpoint (V2); request.amountIn is already base units
     const url = `${this.baseUrl}/sor/quote/v2`;
     const body = {
       chainId: chainId,
@@ -206,6 +205,16 @@ export class OdosAdapter extends BaseAdapter {
       timeout: 8000,
     });
 
+    if (response.status === 401 || response.status === 403) {
+      const err = new Error("Odos API auth required") as Error & { statusCode?: number };
+      err.statusCode = response.status;
+      throw err;
+    }
+    if (response.status === 404) {
+      const err = new Error("Odos API unsupported") as Error & { statusCode?: number };
+      err.statusCode = 404;
+      throw err;
+    }
     if (response.status !== 200) {
       throw new Error(`Odos API returned status ${response.status}`);
     }
@@ -225,14 +234,15 @@ export class OdosAdapter extends BaseAdapter {
     // Calculate price impact (Odos doesn't provide this directly)
     const priceImpactBps = undefined;
 
-    // Calculate fees
-    // Odos includes partner fee in the quote if partner code is set
-    // We calculate our platform fee separately
-    const platformFeeBps = getPlatformFeeBps();
-    const netOut = parseFloat(quote.netOutValue || quote.outputTokens[0]?.amount || "0");
-    const platformFee = (netOut * platformFeeBps) / 10000;
+    // Odos returns amounts in wei; normalize to human for consistent display/ranking
+    const rawAmountIn = quote.inputTokens[0]?.amount ?? request.amountIn;
+    const rawAmountOut = quote.netOutValue || quote.outputTokens[0]?.amount || "0";
+    const amountInHuman = fromWei(rawAmountIn, fromDecimals);
+    const amountOutHuman = fromWei(rawAmountOut, toDecimals);
 
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const platformFeeBps = getPlatformFeeBps();
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -242,8 +252,8 @@ export class OdosAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.inputTokens[0]?.amount || request.amountIn,
-      amountOut: quote.netOutValue || quote.outputTokens[0]?.amount || "0",
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
       estimatedGas: quote.gasEstimate?.toString() || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -255,8 +265,8 @@ export class OdosAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.inputTokens[0]?.amount || request.amountIn,
-          amountOut: quote.netOutValue || quote.outputTokens[0]?.amount || "0",
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["Odos"],
@@ -274,9 +284,10 @@ export class OdosAdapter extends BaseAdapter {
    * Get mock quote (fallback when API key not available)
    */
   private async getMockQuote(request: QuoteRequest): Promise<Route[]> {
-    // Mock: Calculate a simple swap with 0.25% DEX fee + 0.1% platform fee
+    // Mock: request.amountIn is wei; convert to human for fee math
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const amountIn = parseFloat(fromWei(request.amountIn, fromDecimals));
     // Odos often finds competitive prices, especially for complex routes
-    const amountIn = parseFloat(request.amountIn);
     const dexFeeRate = 0.0025; // 0.25% DEX fee
     const amountAfterDexFee = amountIn * (1 - dexFeeRate);
     const platformFeeBps = getPlatformFeeBps();

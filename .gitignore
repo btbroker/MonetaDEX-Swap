@@ -24,9 +24,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Local env files
-.env*.local
-.env
+# Local and environment-specific env files (never commit secrets)
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
 
 # Vercel
 .vercel
@@ -37,9 +39,14 @@ lerna-debug.log*
 # IDE
 .vscode
 .idea
+.cursor
 *.swp
 *.swo
 *~
 
 # OS
 Thumbs.db
+!**/*.env.example
+!**/.env.local.example
+!**/.env.staging.example
+!**/.env.production.example

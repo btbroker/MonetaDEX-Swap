@@ -94,6 +94,29 @@ describe("ProviderHealthTracker", () => {
     it("should return true for unknown provider", () => {
       expect(tracker.isHealthy("unknown-provider")).toBe(true);
     });
+
+    it("should open circuit after 2 consecutive 401/429 and recover after cooldown", () => {
+      tracker.recordFailure("api-provider", "401", { statusCode: 401 });
+      expect(tracker.isHealthy("api-provider")).toBe(true);
+
+      tracker.recordFailure("api-provider", "401", { statusCode: 401 });
+      expect(tracker.isHealthy("api-provider")).toBe(false);
+
+      tracker.recordSuccess("api-provider", 100);
+      expect(tracker.isHealthy("api-provider")).toBe(true);
+    });
+  });
+
+  describe("getHealthStatus", () => {
+    it("should return healthy when provider is healthy", () => {
+      tracker.recordSuccess("p", 50);
+      expect(tracker.getHealthStatus("p")).toBe("healthy");
+    });
+
+    it("should return disabled when provider has too many failures", () => {
+      for (let i = 0; i < 5; i++) tracker.recordFailure("p", "err");
+      expect(tracker.getHealthStatus("p")).toBe("disabled");
+    });
   });
 
   describe("getHealth", () => {

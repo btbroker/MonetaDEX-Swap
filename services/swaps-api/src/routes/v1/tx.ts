@@ -143,10 +143,10 @@ export async function txRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const requestId = request.id || randomUUID();
-      fastify.log.info({ requestId, body: request.body }, "POST /v1/tx");
 
       try {
         const txRequest = TxRequestSchema.parse(request.body);
+        fastify.log.info({ requestId, routeId: txRequest.routeId }, "POST /v1/tx");
 
         // Validate route snapshot integrity
         const validation = routeSnapshotStore.validate(txRequest);

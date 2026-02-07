@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { PolicyEngine } from "./policy.js";
 import type { Route, QuoteRequest } from "@fortuna/shared";
-import type { PolicyConfig, AllowlistConfig, DenylistConfig } from "./types.js";
+import type { AllowlistConfig, DenylistConfig } from "./types.js";
 
 describe("PolicyEngine - Tool Filtering", () => {
   const createMockRoute = (overrides?: Partial<Route>): Route => ({

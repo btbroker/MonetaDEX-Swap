@@ -78,7 +78,8 @@ export async function httpRequest<T = unknown>(
 }
 
 /**
- * Get API key from environment variable
+ * Get API key from environment variable.
+ * Never log or expose the return value; use only for outbound requests.
  */
 export function getApiKey(envVar: string, required = false): string | undefined {
   const key = process.env[envVar];

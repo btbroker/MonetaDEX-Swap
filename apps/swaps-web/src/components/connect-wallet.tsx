@@ -44,7 +44,7 @@ export function WalletDropdownProvider({ children }: { children: React.ReactNode
 
 function findConnectorForWallet<T extends { uid: string; name?: string }>(
   wallet: EIP6963ProviderDetail,
-  connectors: T[]
+  connectors: readonly T[]
 ): T | null {
   const name = wallet.info.name.toLowerCase();
   const rdns = wallet.info.rdns?.toLowerCase() ?? "";
@@ -55,10 +55,6 @@ function findConnectorForWallet<T extends { uid: string; name?: string }>(
     if (cName.includes(name) || name.includes(cName)) return c;
   }
   return null;
-}
-
-function asWalletConnector(c: { uid: string; name?: string }): WalletConnector {
-  return { uid: c.uid, name: c.name };
 }
 
 export function ConnectWallet() {
@@ -102,17 +98,9 @@ export function ConnectWallet() {
   const hasEIP6963 = wallets.length > 0;
   const fallbackConnectors = !hasEIP6963 ? connectors : [];
 
-  if (!mounted) {
-    return (
-      <div className="relative" ref={dropdownRef}>
-        <div className="px-5 py-2.5 bg-gray-200 rounded-xl text-sm font-semibold animate-pulse w-[140px]">
-          <span className="invisible">Connect Wallet</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (isConnected && address) {
+  // Always render the same structure (div > button when not connected) to avoid hydration mismatch.
+  // When !mounted we keep the button but disable it until client has hydrated.
+  if (isConnected && address && mounted) {
     return (
       <div className="flex items-center gap-3">
         <div className="px-3 py-1.5 bg-green-50 border border-green-200 rounded-full">
@@ -125,7 +113,7 @@ export function ConnectWallet() {
         </div>
         <button
           onClick={() => disconnect()}
-          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-xl text-sm font-medium text-gray-700 transition-colors"
+          className="btn-secondary py-2"
         >
           Disconnect
         </button>
@@ -137,14 +125,15 @@ export function ConnectWallet() {
     <div className="relative" ref={dropdownRef}>
       <button
         type="button"
-        onClick={() => (isOpen ? close() : open())}
-        className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl hover:from-blue-700 hover:to-purple-700 text-sm font-semibold shadow-lg hover:shadow-xl transition-all"
+        disabled={!mounted}
+        onClick={() => mounted && (isOpen ? close() : open())}
+        className="btn-primary disabled:opacity-70 disabled:pointer-events-none"
         aria-expanded={isOpen}
         aria-haspopup="true"
       >
         Connect Wallet
       </button>
-      {isOpen && (
+      {mounted && isOpen && (
         <div className="absolute right-0 top-full mt-2 w-64 py-1 bg-white border border-gray-200 rounded-xl shadow-lg z-50 max-h-[70vh] overflow-y-auto">
           {hasEIP6963 ? (
             <>

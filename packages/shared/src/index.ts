@@ -29,6 +29,7 @@ export type Token = z.infer<typeof TokenSchema>;
 export const RouteTypeSchema = z.enum(["swap", "bridge"]);
 export type RouteType = z.infer<typeof RouteTypeSchema>;
 
+/** Step amounts: PREFERRED = amountInHuman/amountOutHuman; amountIn/amountOut are deprecated (compat only). */
 export const RouteStepSchema = z.object({
   type: RouteTypeSchema,
   provider: z.string(),
@@ -36,12 +37,17 @@ export const RouteStepSchema = z.object({
   toChainId: ChainIdSchema,
   fromToken: TokenAddressSchema,
   toToken: TokenAddressSchema,
-  amountIn: z.string(),
-  amountOut: z.string(),
+  amountIn: z.string(), // deprecated (compat only): use amountInHuman for display
+  amountOut: z.string(), // deprecated (compat only): use amountOutHuman for display
+  amountInWei: z.string().optional(),
+  amountOutWei: z.string().optional(),
+  amountInHuman: z.string().optional(), // PREFERRED for display
+  amountOutHuman: z.string().optional(), // PREFERRED for display
 });
 
 export type RouteStep = z.infer<typeof RouteStepSchema>;
 
+/** Route amounts: PREFERRED = amountInHuman/amountOutHuman; amountIn/amountOut are deprecated (compat only). */
 export const RouteSchema = z.object({
   routeId: z.string(),
   provider: z.string(),
@@ -50,14 +56,22 @@ export const RouteSchema = z.object({
   toChainId: ChainIdSchema,
   fromToken: TokenAddressSchema,
   toToken: TokenAddressSchema,
-  amountIn: z.string(),
-  amountOut: z.string(),
+  amountIn: z.string(), // deprecated (compat only): use amountInHuman for display
+  amountOut: z.string(), // deprecated (compat only): use amountOutHuman for display
   estimatedGas: z.string(),
   fees: z.string(),
   priceImpactBps: z.number().int().min(0).max(10000).optional(),
   steps: z.array(RouteStepSchema),
   warnings: z.array(z.string()).optional(),
   toolsUsed: z.array(z.string()).optional(),
+  amountInWei: z.string().optional(),
+  amountOutWei: z.string().optional(),
+  fromDecimals: z.number().int().min(0).max(18).optional(),
+  toDecimals: z.number().int().min(0).max(18).optional(),
+  amountInHuman: z.string().optional(), // PREFERRED for display
+  amountOutHuman: z.string().optional(), // PREFERRED for display
+  fromSymbol: z.string().optional(),
+  toSymbol: z.string().optional(),
 });
 
 export type Route = z.infer<typeof RouteSchema>;

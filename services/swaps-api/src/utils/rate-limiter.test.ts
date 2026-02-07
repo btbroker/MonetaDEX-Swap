@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { RateLimiter, getRateLimitConfig, DEFAULT_RATE_LIMITS } from "./rate-limiter.js";
+import { RateLimiter, getRateLimitConfig, DEFAULT_RATE_LIMITS, rateLimiter, isRateLimited } from "./rate-limiter.js";
 
 describe("RateLimiter", () => {
   let limiter: RateLimiter;
@@ -122,5 +122,25 @@ describe("getRateLimitConfig", () => {
     const config = getRateLimitConfig("unknown-provider");
     expect(config.maxRequests).toBe(50);
     expect(config.windowMs).toBe(60 * 1000);
+  });
+});
+
+describe("isRateLimited", () => {
+  beforeEach(() => {
+    rateLimiter.resetAll();
+  });
+
+  it("should return false when under limit", () => {
+    rateLimiter.checkLimit("p", { maxRequests: 10, windowMs: 60_000 });
+    expect(isRateLimited("p")).toBe(false);
+  });
+
+  it("should return true when at or over limit", () => {
+    const config = getRateLimitConfig("0x");
+    for (let i = 0; i < config.maxRequests; i++) {
+      rateLimiter.checkLimit("0x", config);
+    }
+    expect(isRateLimited("0x")).toBe(true);
+    rateLimiter.reset("0x");
   });
 });

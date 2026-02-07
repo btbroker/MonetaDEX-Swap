@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * Bebop adapter for same-chain swaps
@@ -94,11 +95,8 @@ export class BebopAdapter extends BaseAdapter {
     try {
       let routes: Route[];
 
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      if (this.useMock) return [];
+      routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -145,16 +143,18 @@ export class BebopAdapter extends BaseAdapter {
       throw new Error(`Unsupported chain: ${request.fromChainId}`);
     }
 
-    // Get fee recipient for partner fees
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
-    // Bebop Router API quote endpoint
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+    const amountWei = toWei(request.amountIn, fromDecimals);
+
     const url = `${this.baseUrl}/router/${chainName}/v1/quote`;
     const body = {
       sellToken: request.fromToken,
       buyToken: request.toToken,
-      sellAmount: request.amountIn,
+      sellAmount: amountWei,
       takerAddress: feeRecipient || "0x0000000000000000000000000000000000000000",
       ...(feeRecipient && {
         feeRecipient: feeRecipient,
@@ -201,12 +201,12 @@ export class BebopAdapter extends BaseAdapter {
     // Calculate price impact (Bebop doesn't provide this directly)
     const priceImpactBps = undefined;
 
-    // Calculate fees
-    const platformFeeBps = getPlatformFeeBps();
-    const buyAmount = parseFloat(quote.buyAmount);
-    const platformFee = (buyAmount * platformFeeBps) / 10000;
+    const amountInHuman = fromWei(quote.sellAmount, fromDecimals);
+    const amountOutHuman = fromWei(quote.buyAmount, toDecimals);
 
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const platformFeeBps = getPlatformFeeBps();
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -216,8 +216,8 @@ export class BebopAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: quote.sellAmount,
-      amountOut: quote.buyAmount, // Already net of partner fee
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
       estimatedGas: quote.estimatedGas?.toString() || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -229,8 +229,8 @@ export class BebopAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: quote.sellAmount,
-          amountOut: quote.buyAmount,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["Bebop"],

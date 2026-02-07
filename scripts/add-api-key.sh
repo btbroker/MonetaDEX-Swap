@@ -37,7 +37,7 @@ declare -A KEY_INFO=(
   ["ONEINCH_API_KEY"]="1inch (Priority 2 - Good coverage)"
   ["PARASWAP_API_KEY"]="Paraswap (Priority 3 - Competitive prices)"
   ["SUSHISWAP_API_KEY"]="SushiSwap (Priority 4 - Also in Jumper)"
-  ["OKX_API_KEY"]="OKX (Priority 5 - Also in Jumper)"
+  ["OKX_ACCESS_KEY"]="OKX (Priority 5 - Also in Jumper)"
   ["OPENOCEAN_API_KEY"]="OpenOcean (Additional coverage)"
   ["ODOS_API_KEY"]="Odos (Advanced routing)"
   ["ODOS_PARTNER_CODE"]="Odos Partner Code (For affiliate fees)"
@@ -55,7 +55,7 @@ echo "  1) KYBERSWAP_API_KEY - ${KEY_INFO[KYBERSWAP_API_KEY]}"
 echo "  2) ONEINCH_API_KEY - ${KEY_INFO[ONEINCH_API_KEY]}"
 echo "  3) PARASWAP_API_KEY - ${KEY_INFO[PARASWAP_API_KEY]}"
 echo "  4) SUSHISWAP_API_KEY - ${KEY_INFO[SUSHISWAP_API_KEY]}"
-echo "  5) OKX_API_KEY - ${KEY_INFO[OKX_API_KEY]}"
+echo "  5) OKX_ACCESS_KEY - ${KEY_INFO[OKX_ACCESS_KEY]}"
 echo ""
 echo "Additional Keys:"
 echo "  6) OPENOCEAN_API_KEY - ${KEY_INFO[OPENOCEAN_API_KEY]}"
@@ -76,7 +76,7 @@ case $choice in
   2) KEY_NAME="ONEINCH_API_KEY" ;;
   3) KEY_NAME="PARASWAP_API_KEY" ;;
   4) KEY_NAME="SUSHISWAP_API_KEY" ;;
-  5) KEY_NAME="OKX_API_KEY" ;;
+  5) KEY_NAME="OKX_ACCESS_KEY" ;;
   6) KEY_NAME="OPENOCEAN_API_KEY" ;;
   7) KEY_NAME="ODOS_API_KEY" ;;
   8) KEY_NAME="ODOS_PARTNER_CODE" ;;

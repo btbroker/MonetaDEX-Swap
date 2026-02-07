@@ -23,7 +23,7 @@ declare -a KEYS=(
   "ONEINCH_API_KEY"
   "PARASWAP_API_KEY"
   "SUSHISWAP_API_KEY"
-  "OKX_API_KEY"
+  "OKX_ACCESS_KEY"
   "OPENOCEAN_API_KEY"
   "ODOS_API_KEY"
   "DODO_API_KEY"
@@ -38,7 +38,7 @@ declare -a CRITICAL_KEYS=(
   "ONEINCH_API_KEY"
   "PARASWAP_API_KEY"
   "SUSHISWAP_API_KEY"
-  "OKX_API_KEY"
+  "OKX_ACCESS_KEY"
 )
 
 echo "📋 Critical Keys (Tier 1):"

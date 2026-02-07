@@ -29,14 +29,17 @@ export class RouteSnapshotStore {
    * Store a route snapshot
    */
   store(route: Route): void {
+    const routeWithWei = route as Route & { amountInWei?: string; amountOutWei?: string };
+    const amountInWei = routeWithWei.amountInWei ?? route.amountIn;
+    const amountOutWei = routeWithWei.amountOutWei ?? route.amountOut;
     const snapshot: RouteSnapshot = {
       routeId: route.routeId,
       fromChainId: route.fromChainId,
       toChainId: route.toChainId,
       fromToken: route.fromToken,
       toToken: route.toToken,
-      amountIn: route.amountIn,
-      amountOut: route.amountOut,
+      amountIn: amountInWei,
+      amountOut: amountOutWei,
       provider: route.provider,
       type: route.type,
       createdAt: Date.now(),

@@ -245,3 +245,13 @@ export function getRateLimitConfig(provider: string): RateLimitConfig {
     }
   );
 }
+
+/**
+ * Whether the provider is currently rate-limited (next request would be rejected).
+ * Used by /v1/providers to expose "rate-limited" status.
+ */
+export function isRateLimited(provider: string): boolean {
+  const config = getRateLimitConfig(provider);
+  const count = rateLimiter.getCount(provider, config.windowMs);
+  return count >= config.maxRequests;
+}

@@ -5,9 +5,11 @@ import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import * as Sentry from "@sentry/node";
+import { envBool, envPresent } from "./load-env.js";
 import { logger } from "./utils/logger.js";
 import { healthzRoutes } from "./routes/healthz.js";
 import { v1Routes } from "./routes/v1/index.js";
+import { getProviderStatus } from "./config/provider-config.js";
 
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -98,6 +100,26 @@ export async function buildFastify(): Promise<typeof fastify> {
   return fastify;
 }
 
+// Env vars that should be set in production for real quotes (warn only, do not crash)
+const RECOMMENDED_PROVIDER_KEYS = [
+  "ZEROX_API_KEY",
+  "OKX_ACCESS_KEY",
+  "PARASWAP_API_KEY",
+  "ONEINCH_API_KEY",
+  "KYBERSWAP_API_KEY",
+];
+
+function warnIfMissingRecommendedKeys(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const set = RECOMMENDED_PROVIDER_KEYS.filter((k) => process.env[k]);
+  if (set.length === 0) {
+    logger.warn(
+      { envVars: RECOMMENDED_PROVIDER_KEYS },
+      "Production: no aggregator API keys set; quotes will use mock/fallback. Set at least one key in .env.production or host env (see docs/KEY_ROTATION.md)."
+    );
+  }
+}
+
 // Start server
 const start = async () => {
   try {
@@ -105,6 +127,30 @@ const start = async () => {
     logger.info({ port: PORT, host: HOST }, "Server listening");
     logger.info(`API docs available at http://${HOST}:${PORT}/docs`);
     logger.info(`OpenAPI spec available at http://${HOST}:${PORT}/openapi.json`);
+    warnIfMissingRecommendedKeys();
+    const realQuotesOnly = envBool("REAL_QUOTES_ONLY");
+    const debugQuotes = envBool("DEBUG_QUOTES");
+    const { withKeys, public: publicProviders } = getProviderStatus();
+    logger.info(
+      {
+        REAL_QUOTES_ONLY: realQuotesOnly,
+        DEBUG_QUOTES: debugQuotes,
+        withKeys,
+        public: publicProviders,
+      },
+      "Startup: quote flags and provider lists (names only; no secrets)"
+    );
+    if (process.env.NODE_ENV !== "production") {
+      logger.info(
+        {
+          ACCESS_KEY: envPresent("OKX_ACCESS_KEY"),
+          SECRET_KEY: envPresent("OKX_SECRET_KEY"),
+          PASSPHRASE: envPresent("OKX_PASSPHRASE"),
+          PROJECT_ID: envPresent("OKX_PROJECT_ID"),
+        },
+        "OKX env present (dev only; no values)"
+      );
+    }
   } catch (err) {
     logger.error({ err }, "Server startup failed");
     process.exit(1);

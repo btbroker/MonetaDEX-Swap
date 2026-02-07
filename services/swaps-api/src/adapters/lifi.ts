@@ -7,6 +7,7 @@ import { rateLimiter, getRateLimitConfig } from "../utils/rate-limiter.js";
 import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
+import { DEBUG_QUOTES, sanitizeResponseMessage } from "../utils/debug-quotes.js";
 import { calculatePlatformFee, getPlatformFeeBps } from "../utils/fee-config.js";
 
 /**
@@ -109,11 +110,8 @@ export class LiFiAdapter extends BaseAdapter {
     try {
       let routes: Route[];
 
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      if (this.useMock) return [];
+      routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -190,6 +188,22 @@ export class LiFiAdapter extends BaseAdapter {
       body,
       timeout: 15000, // 15 seconds for bridges
     });
+
+    const didReturnRouteCount = response.status === 200 && response.data ? 1 : 0;
+    if (DEBUG_QUOTES) {
+      const payload: Record<string, unknown> = {
+        provider: this.name,
+        httpStatus: response.status,
+        didReturnRouteCount,
+      };
+      if (didReturnRouteCount === 0) {
+        payload.safeMessage = "provider returned 0 routes";
+        const data = response.data as Record<string, unknown> | undefined;
+        const reason = data?.message ?? data?.error ?? data?.errorMsg;
+        if (reason !== undefined) payload.reason = sanitizeResponseMessage(reason);
+      }
+      logger.info(payload, "DEBUG_QUOTES: response");
+    }
 
     if (response.status !== 200) {
       throw new Error(`LI.FI API returned status ${response.status}`);

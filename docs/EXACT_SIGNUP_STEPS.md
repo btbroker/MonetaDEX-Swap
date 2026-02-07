@@ -224,7 +224,7 @@ KYBERSWAP_API_KEY=paste_here
 ONEINCH_API_KEY=paste_here
 PARASWAP_API_KEY=paste_here
 SUSHISWAP_API_KEY=paste_here
-OKX_API_KEY=paste_here
+OKX_ACCESS_KEY=paste_here
 # ... etc
 ```
 

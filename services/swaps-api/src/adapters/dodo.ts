@@ -8,6 +8,7 @@ import { providerHealthTracker } from "../utils/provider-health.js";
 import { quoteMetricsTracker } from "../metrics/quote-metrics.js";
 import { logger } from "../utils/logger.js";
 import { getFeeRecipientWithFallback, getPlatformFeeBps } from "../utils/fee-config.js";
+import { getTokenDecimals, toWei, fromWei } from "../utils/token-decimals.js";
 
 /**
  * DODO adapter for same-chain swaps
@@ -94,11 +95,8 @@ export class DodoAdapter extends BaseAdapter {
     try {
       let routes: Route[];
 
-      if (this.useMock) {
-        routes = await this.getMockQuote(request);
-      } else {
-        routes = await this.getRealQuote(request);
-      }
+      if (this.useMock) return [];
+      routes = await this.getRealQuote(request);
 
       const responseTime = Date.now() - startTime;
       providerHealthTracker.recordSuccess(this.name, responseTime);
@@ -145,16 +143,18 @@ export class DodoAdapter extends BaseAdapter {
       throw new Error(`Unsupported chain: ${request.fromChainId}`);
     }
 
-    // Get fee recipient for partner fees
     const feeRecipient = getFeeRecipientWithFallback(request.fromChainId);
     const feeBps = getPlatformFeeBps();
 
-    // DODO SmartTrade quote endpoint
+    const fromDecimals = getTokenDecimals(request.fromChainId, request.fromToken);
+    const toDecimals = getTokenDecimals(request.toChainId, request.toToken);
+    const amountWei = toWei(request.amountIn, fromDecimals);
+
     const url = `${this.baseUrl}/smart-route/v1/quote`;
     const body = {
       fromTokenAddress: request.fromToken,
       toTokenAddress: request.toToken,
-      fromTokenAmount: request.amountIn,
+      fromTokenAmount: amountWei,
       chainId: chainId,
       userAddr: feeRecipient || "0x0000000000000000000000000000000000000000",
       ...(feeRecipient && {
@@ -203,12 +203,12 @@ export class DodoAdapter extends BaseAdapter {
       ? Math.round(quote.priceImpact * 100) // Convert percentage to basis points
       : undefined;
 
-    // Calculate fees
-    const platformFeeBps = getPlatformFeeBps();
-    const resAmount = parseFloat(quote.resAmount);
-    const platformFee = (resAmount * platformFeeBps) / 10000;
+    const amountInHuman = fromWei(amountWei, fromDecimals);
+    const amountOutHuman = fromWei(quote.resAmount, toDecimals);
 
-    // Total fees = platform fee (DEX fees are already in the price difference)
+    const platformFeeBps = getPlatformFeeBps();
+    const amountOutNum = parseFloat(amountOutHuman);
+    const platformFee = (amountOutNum * platformFeeBps) / 10000;
     const fees = platformFee;
 
     const route: Omit<Route, "routeId"> = {
@@ -218,8 +218,8 @@ export class DodoAdapter extends BaseAdapter {
       toChainId: request.toChainId,
       fromToken: request.fromToken,
       toToken: request.toToken,
-      amountIn: request.amountIn,
-      amountOut: quote.resAmount, // Already net of partner fee
+      amountIn: amountInHuman,
+      amountOut: amountOutHuman,
       estimatedGas: quote.gas?.toString() || "150000",
       fees: fees > 0 ? fees.toFixed(18) : "0",
       priceImpactBps,
@@ -231,8 +231,8 @@ export class DodoAdapter extends BaseAdapter {
           toChainId: request.toChainId,
           fromToken: request.fromToken,
           toToken: request.toToken,
-          amountIn: request.amountIn,
-          amountOut: quote.resAmount,
+          amountIn: amountInHuman,
+          amountOut: amountOutHuman,
         } as RouteStep,
       ],
       toolsUsed: toolsUsed.length > 0 ? toolsUsed : ["DODO"],
